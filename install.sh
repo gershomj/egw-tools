@@ -1,5 +1,5 @@
 #!/bin/sh
-# egw-tools installer — one command, everything automated.
+# egw-tools installer — one command.
 # curl -sSL https://raw.githubusercontent.com/gershomj/egw-tools/main/install.sh | bash
 
 set -e
@@ -8,10 +8,12 @@ REPO="https://raw.githubusercontent.com/gershomj/egw-tools/main"
 INSTALL_DIR="$HOME/.egw-tools"
 BIN_DIR="$HOME/.local/bin"
 
-echo "egw-tools installer"
-echo "==================="
+echo "╔══════════════════════════════════════════╗"
+echo "║       egw — EGW + KJV Bible Search      ║"
+echo "╚══════════════════════════════════════════╝"
+echo ""
 
-# ── Find/create Python ──
+# ── Find Python ──
 PYTHON=""
 for p in python3 python; do
     if command -v "$p" >/dev/null 2>&1; then
@@ -21,33 +23,65 @@ for p in python3 python; do
 done
 
 if [ -z "$PYTHON" ]; then
-    echo "Python 3 not found. Install it first:"
-    echo "  Ubuntu/Debian: sudo apt install python3"
-    echo "  Arch:          sudo pacman -S python"
-    echo "  Fedora:        sudo dnf install python3"
-    echo "  macOS:         brew install python3"
-    exit 1
+    echo "Python 3 is required but not found."
+    echo ""
+    # Detect package manager
+    PKG_MGR=""
+    if command -v apt >/dev/null 2>&1; then
+        PKG_MGR="sudo apt install python3"
+    elif command -v pacman >/dev/null 2>&1; then
+        PKG_MGR="sudo pacman -S python"
+    elif command -v dnf >/dev/null 2>&1; then
+        PKG_MGR="sudo dnf install python3"
+    elif command -v brew >/dev/null 2>&1; then
+        PKG_MGR="brew install python3"
+    elif command -v zypper >/dev/null 2>&1; then
+        PKG_MGR="sudo zypper install python3"
+    fi
+
+    if [ -n "$PKG_MGR" ]; then
+        printf "Install Python 3 now? [y/N] "
+        read -r answer
+        if [ "$answer" = "y" ] || [ "$answer" = "Y" ]; then
+            echo "Running: $PKG_MGR"
+            $PKG_MGR
+            # Re-check
+            for p in python3 python; do
+                if command -v "$p" >/dev/null 2>&1; then
+                    PYTHON="$p"
+                    break
+                fi
+            done
+        fi
+    fi
+
+    if [ -z "$PYTHON" ]; then
+        echo "Python 3 not found. Install it from https://python.org/downloads/"
+        echo "Make sure 'python3' is on your PATH, then re-run this installer."
+        exit 1
+    fi
 fi
 
 echo "Python: $($PYTHON --version)"
+echo ""
 
 # ── Create directories ──
 mkdir -p "$INSTALL_DIR" "$BIN_DIR"
 
-# ── Download files ──
-echo "Downloading egw..."
+# ── Download egw ──
+echo "Downloading egw (~27 KB)..."
 curl -sSL "$REPO/egw" -o "$INSTALL_DIR/egw"
 chmod +x "$INSTALL_DIR/egw"
 
-echo "Downloading build_kjv.py..."
-curl -sSL "$REPO/build_kjv.py" -o "$INSTALL_DIR/build_kjv.py"
+# ── Download pre-built KJV ──
+echo "Downloading KJV Bible database (~12 MB)..."
+curl -sSL "$REPO/kjv.db" -o "$INSTALL_DIR/kjv.db"
 
 # ── Link to PATH ──
 ln -sf "$INSTALL_DIR/egw" "$BIN_DIR/egw"
 
 # ── Ensure ~/.local/bin is in PATH ──
 if ! echo "$PATH" | grep -q "$BIN_DIR"; then
-    # Detect shell and add to rc file
     case "$SHELL" in
         */zsh)   RC="$HOME/.zshrc" ;;
         */bash)  RC="$HOME/.bashrc" ;;
@@ -61,24 +95,16 @@ if ! echo "$PATH" | grep -q "$BIN_DIR"; then
     fi
 fi
 
-# ── Start KJV build automatically ──
 echo ""
-echo "Starting KJV Bible build in background..."
-"$PYTHON" "$INSTALL_DIR/build_kjv.py" > "$INSTALL_DIR/kjv-build.log" 2>&1 &
-BUILD_PID=$!
-echo $BUILD_PID > "$INSTALL_DIR/kjv-build.pid"
-
+echo "Done! egw v$($PYTHON "$INSTALL_DIR/egw" --version 2>/dev/null || echo "?") is installed."
 echo ""
-echo "Done! egw is installed."
+echo "  KJV Bible:  ready (pre-built, 31,009 verses)"
+echo "  EGW corpus: not downloaded yet (~1.3 GB, optional)"
 echo ""
-echo "  KJV Bible is building in the background (~40 min)."
-echo "  Check progress:  egw --kjv-status"
-echo ""
-echo "  Try it now:"
-echo "    egw --version"
-echo "    egw --search \"sabbath\"        (needs EGW database)"
-echo "    egw --kjv \"John 3:16\"         (works once build finishes)"
-echo ""
-echo "  To use EGW features, place egw-corpus.db in ~/.egw-tools/"
+echo "  Quick start:"
+echo "    egw --kjv \"John 3:16\"      KJV verse lookup"
+echo "    egw --kjv-search \"faith\"   KJV keyword search"
+echo "    egw --egw-download          Download EGW writings"
+echo "    egw --search \"sabbath\"      Search EGW (after download)"
 echo ""
 echo "  Restart your terminal or run:  source $RC"

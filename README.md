@@ -1,6 +1,6 @@
 # egw — Your Personal Bible Study CLI
 
-Search the **King James Bible** and **Ellen G. White's writings** from your terminal. One command to install. Nothing to configure. It just works.
+Search the **King James Bible** and **Ellen G. White's writings** from your terminal. One command to install. Nothing to configure. KJV works instantly — no build step, no waiting, no internet required after install.
 
 ```
 egw --kjv "John 3:16"          # Look up any KJV verse
@@ -22,21 +22,24 @@ curl -sSL https://raw.githubusercontent.com/gershomj/egw-tools/main/install.sh |
 irm https://raw.githubusercontent.com/gershomj/egw-tools/main/install.ps1 | iex
 ```
 
-That's it. The installer finds Python, downloads everything, adds `egw` to your PATH, and starts building the KJV database in the background. You can use the tool right away.
+The installer downloads `egw` and the pre-built KJV database (~12 MB). If Python 3 isn't found, it offers to install it for you. You're ready to go in seconds.
 
 ---
 
 ## What You Can Do
 
-### KJV Bible
+### KJV Bible (works immediately, no extra download)
+
 | Command | What it does |
 |---|---|
 | `egw --kjv "John 3:16"` | Look up a verse |
 | `egw --kjv "Romans 8:28-30"` | Verse range |
 | `egw --kjv-search "living water"` | Search by keyword or phrase |
 | `egw --kjv-chapter "Psalm 23"` | Read a full chapter |
+| `egw --kjv-status` | Database info (31,009 verses) |
 
-### EGW Writings
+### EGW Writings (requires corpus download — the tool prompts you)
+
 | Command | What it does |
 |---|---|
 | `egw --search "sabbath school"` | Full-text search |
@@ -53,9 +56,10 @@ That's it. The installer finds Python, downloads everything, adds `egw` to your 
 | `egw GC 456.1` | Jump to an exact paragraph |
 
 ### Maintenance
+
 | Command | What it does |
 |---|---|
-| `egw --kjv-status` | Check KJV database build progress |
+| `egw --egw-download` | Download EGW corpus (~1.3 GB, optional) |
 | `egw --update` | Update to the latest release |
 | `egw --version` | Show your current version |
 | `egw --help` | See all commands |
@@ -70,45 +74,54 @@ That's it. The installer finds Python, downloads everything, adds `egw` to your 
 
 ## Requirements
 
-- **Python 3.9+** — the installer finds it automatically. If it's missing, install from [python.org](https://python.org) or your package manager.
+- **Python 3.9+** — the installer finds it automatically. If missing, it offers to install via your package manager (apt, pacman, brew, dnf, winget). Or grab it from [python.org](https://python.org).
 - That's it. No pip packages, no Docker, no API keys, no configuration files.
 
 Everything lives in `~/.egw-tools/`. Uninstall by deleting that folder and removing `egw` from your PATH.
 
 ---
 
-## EGW Database
+## EGW Corpus
 
-KJV works out of the box. For EGW features, you'll need an `egw-corpus.db` placed in `~/.egw-tools/`. The tool will tell you where to put it if it's missing.
+KJV works out of the box. When you first run any EGW command (like `--search`), the tool asks if you want to download the EGW corpus (~1.3 GB) from GitHub Releases. You can also trigger this manually with:
+
+```
+egw --egw-download
+```
+
+The download is resumable — if interrupted, just run it again.
 
 ---
 
 ## How It Works (Technical Details)
 
-### Zero-Config Architecture
-The tool auto-detects its home directory (`~/.egw-tools/`) and creates it on first run. No environment variables needed — everything uses sensible defaults. The KJV database builds silently in the background via a detached subprocess, so your terminal isn't tied up.
+### KJV: Pre-Built, Instant
+The KJV database ships pre-built with the installer (31,009 verses, 12 MB SQLite database with FTS5 full-text indexing). No background build process. No external API calls. No waiting. First `--kjv` command works instantly, and KJV features work completely offline after install.
+
+### EGW: On-Demand Download
+The EGW corpus (~1.3 GB, 1M+ paragraphs) is downloaded from GitHub Releases when you choose to. Once downloaded, all EGW features work fully offline. The prompt is clear about the size and asks permission before downloading.
 
 ### Search Engine
-Both databases use **SQLite FTS5** — the same full-text engine that powers major applications. Searches are ranked by relevance and return in milliseconds across 1M+ EGW paragraphs and 31K+ Bible verses.
-
-### KJV Auto-Build
-The first time you run any `--kjv` command, `build_kjv.py` launches in the background and downloads all 1,189 chapters from the free bible-api.com service, indexes them with FTS5, and writes the result to `~/.egw-tools/kjv.db` (~3 MB). Takes about 40 minutes. Check progress with `egw --kjv-status`. The builder is resumable — if it gets interrupted, it picks up where it left off.
+Both databases use **SQLite FTS5** — the same full-text engine that powers major applications. Searches are ranked by relevance and return in milliseconds.
 
 ### Self-Updating
-`egw --update` queries the GitHub Releases API for the latest version tag, compares it against the running version, downloads the new binary if newer, and atomically replaces itself (old version saved as `.bak`).
+`egw --update` queries the GitHub Releases API for the latest version tag and atomically replaces itself (old version saved as `.bak`). This is the only automatic internet connection — everything else requires your explicit action.
 
 ### Cross-Platform
 Pure Python with zero compiled dependencies. Works identically on Linux, macOS, and Windows. The Windows installer creates a `.bat` wrapper so `egw` works natively in Command Prompt and PowerShell.
 
 ### Database Schema
-The EGW corpus database expects these tables:
+
+**KJV** (`kjv.db`):
+- `verses` — book_name, book_abbr, chapter, verse, text, reference
+- `verses_fts` — FTS5 full-text index on book_name + text
+
+**EGW** (`egw-corpus.db`):
 - `paragraphs` — content with book_code, page, paragraph, chapter_num
 - `paragraphs_fts` — FTS5 full-text index
 - `bible_refs` — verse cross-references with normalized formatting
 - `topics` — topical index entries
 - `book_index` — per-book metadata
-
-The KJV database (`kjv.db`) is built automatically. Schema: `verses` (book_name, book_abbr, chapter, verse, text, reference) with `verses_fts` for full-text indexing.
 
 ---
 
