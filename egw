@@ -14,7 +14,7 @@ egw — EGW writings + KJV Bible search. Zero config. One command.
 
 KJV database builds automatically on first use (~40 min in background).
 """
-__version__ = "1.1.1"
+__version__ = "1.1.2"
 __repo__   = "gershomj/egw-tools"
 
 import sqlite3, sys, os, re, json, subprocess, time
@@ -311,7 +311,7 @@ def kjv_search(query, limit=30):
     kjv = sqlite3.connect(str(KJV_DB))
     safe = query.replace('"','""')
     rows = kjv.execute(
-        "SELECT book_name, chapter, verse, text, reference FROM verses_fts WHERE verses_fts MATCH ? ORDER BY rank LIMIT ?",
+        "SELECT v.book_name, v.chapter, v.verse, v.text, v.reference FROM verses_fts fts JOIN verses v ON fts.rowid = v.id WHERE verses_fts MATCH ? ORDER BY rank LIMIT ?",
         (f'"{safe}"', limit)).fetchall()
     kjv.close()
     return rows
