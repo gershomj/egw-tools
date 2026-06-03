@@ -14,7 +14,7 @@ egw — EGW writings + KJV Bible search. Zero config. One command.
 
 KJV database builds automatically on first use (~40 min in background).
 """
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 __repo__   = "gershomj/egw-tools"
 
 import sqlite3, sys, os, re, json, subprocess, time
@@ -29,6 +29,11 @@ KJV_DB  = HOME / "kjv.db"
 ME      = Path(__file__).resolve()
 MY_DIR  = ME.parent
 BUILDER = MY_DIR / "build_kjv.py"
+# Also check install directory
+if not BUILDER.exists():
+    alt = HOME / "build_kjv.py"
+    if alt.exists():
+        BUILDER = alt
 
 ALIASES = {
     'great controversy':'GC','desire of ages':'DA','acts of the apostles':'AA',
@@ -56,9 +61,24 @@ def kjv_ensure():
     """Build KJV database in background if missing. Non-blocking."""
     if KJV_DB.exists():
         return
-    if not BUILDER.exists():
-        print("build_kjv.py not found. Run: python3 build_kjv.py")
-        return
+    
+    # Resolve builder location
+    builder = BUILDER
+    if not builder.exists():
+        # Try downloading from GitHub
+        print("Downloading build_kjv.py...")
+        try:
+            url = f"https://raw.githubusercontent.com/{__repo__}/main/build_kjv.py"
+            data = urlopen(url, timeout=30).read()
+            HOME.mkdir(parents=True, exist_ok=True)
+            builder = HOME / "build_kjv.py"
+            builder.write_bytes(data)
+            builder.chmod(0o755)
+            print(f"  Downloaded to {builder}")
+        except Exception as e:
+            print(f"Could not download build_kjv.py: {e}")
+            print("Run: curl -O https://raw.githubusercontent.com/gershomj/egw-tools/main/build_kjv.py")
+            return
     
     # Start build in background
     log = HOME / "kjv-build.log"
@@ -81,7 +101,7 @@ def kjv_ensure():
     
     with open(log, 'w') as f:
         proc = subprocess.Popen(
-            [sys.executable, str(BUILDER)],
+            [sys.executable, str(builder)],
             stdout=f, stderr=subprocess.STDOUT,
             start_new_session=True
         )
@@ -410,6 +430,7 @@ def main():
     if cmd == '--kjv':
         rows, ref = kjv_lookup(args[1])
         if rows is None: print(ref)
+        elif not rows: print(f"Verse not found: {ref}")
         else:
             print(f'\n{ref}\n{"─"*70}')
             for _, ch, v, text in rows:
@@ -432,6 +453,7 @@ def main():
     if cmd == '--kjv-chapter':
         rows, ref = kjv_chapter(args[1])
         if rows is None: print(ref)
+        elif not rows: print(f"Chapter not found: {ref}")
         else:
             print(f'\n{ref}\n{"─"*70}')
             for _, ch, v, text in rows:
