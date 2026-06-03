@@ -1,16 +1,18 @@
-# egw — Your Personal Bible Study CLI
+# egw — Bible Study in Your Terminal
 
-Search the **King James Bible** and **Ellen G. White's writings** from your terminal. One command to install. Nothing to configure. KJV works instantly — no build step, no waiting, no internet required after install.
+Search the **King James Bible** and **Ellen G. White's writings** from your command line. Instant KJV lookup. Powerful EGW search. One command to install.
 
 ```
-egw --kjv "John 3:16"          # Look up any KJV verse
-egw --search "sanctuary"       # Search EGW corpus instantly
-egw --bible "Revelation 13"    # Find every EGW quote on a verse
+egw --kjv "John 3:16"          # Any verse, instantly
+egw --search "sanctuary"       # Full-text search across EGW writings
+egw --bible "Romans 8:28"      # Every EGW paragraph citing a verse
 ```
+
+No signup. No API keys. No waiting. KJV works the moment the installer finishes.
 
 ---
 
-## Install
+## Quick Install
 
 ### Linux / macOS
 ```bash
@@ -22,109 +24,149 @@ curl -sSL https://raw.githubusercontent.com/gershomj/egw-tools/main/install.sh |
 irm https://raw.githubusercontent.com/gershomj/egw-tools/main/install.ps1 | iex
 ```
 
-The installer downloads `egw` and the pre-built KJV database (~12 MB). If Python 3 isn't found, it offers to install it for you. You're ready to go in seconds.
+If Python 3 isn't found, the installer asks permission and installs it for you. Downloads the tool and the KJV database (~12 MB). You're ready in seconds.
 
 ---
 
 ## What You Can Do
 
-### KJV Bible (works immediately, no extra download)
+### 🔍 Search EGW Writings
+
+| Command | What it does |
+|---|---|
+| `egw --search "sabbath school"` | Full-text search (FTS5, ranked, instant) |
+| `egw --search "prayer" --book SC` | Search within a specific book |
+| `egw --stats "grace"` | See how often a word appears in each book |
+| `egw --near "faith works" 10` | Find words within 10 words of each other |
+| `egw --topic "sanctuary"` | Search the topical index |
+| `egw --concordance "spirit"` | Concordance-style listing |
+| `egw --person "James White"` | Find letters and manuscripts mentioning someone |
+
+### 📖 Read and Navigate
+
+| Command | What it does |
+|---|---|
+| `egw GC 456.1` | Jump to an exact paragraph |
+| `egw --chapter GC 41` | Read a full chapter |
+| `egw --cite GC 456.1` | Get a formatted citation ready to paste |
+| `egw --diff GC GC88 456` | Compare two editions side by side |
+| `egw --list` | Browse all available books |
+| `egw --info DA` | Book metadata (year, paragraph count) |
+
+### ✝️ KJV Bible (works instantly, no extra download)
 
 | Command | What it does |
 |---|---|
 | `egw --kjv "John 3:16"` | Look up a verse |
 | `egw --kjv "Romans 8:28-30"` | Verse range |
-| `egw --kjv-search "living water"` | Search by keyword or phrase |
+| `egw --kjv-search "living water"` | Search by keyword |
 | `egw --kjv-chapter "Psalm 23"` | Read a full chapter |
-| `egw --kjv-status` | Database info (31,009 verses) |
+| `egw --kjv-status` | Database stats (31,009 verses) |
 
-### EGW Writings (requires corpus download — the tool prompts you)
-
-| Command | What it does |
-|---|---|
-| `egw --search "sabbath school"` | Full-text search |
-| `egw --search "prayer" --book SC` | Search within a specific book |
-| `egw --bible "John 3:16"` | Find paragraphs that cite a Bible verse |
-| `egw --bible-stats` | See which Bible books are quoted most |
-| `egw --stats "grace"` | See term frequency across all books |
-| `egw --near "faith works" 10` | Find words near each other |
-| `egw --topic "sanctuary"` | Search the topical index |
-| `egw --chapter GC 41` | Read a full chapter |
-| `egw --cite GC 456.1` | Get a formatted citation |
-| `egw --person "James White"` | Find letters mentioning someone |
-| `egw --list` | Browse all available books |
-| `egw GC 456.1` | Jump to an exact paragraph |
-
-### Maintenance
+### 🔗 Cross-References
 
 | Command | What it does |
 |---|---|
-| `egw --egw-download` | Download EGW corpus (~1.3 GB, optional) |
+| `egw --bible "John 3:16"` | Find every EGW paragraph citing a verse |
+| `egw --bible-stats` | Most-quoted Bible books in EGW |
+
+### 🛠 Maintenance
+
+| Command | What it does |
+|---|---|
+| `egw --egw-download` | Download the EGW corpus (~1.3 GB) |
 | `egw --update` | Update to the latest release |
-| `egw --version` | Show your current version |
+| `egw --version` | Show current version |
 | `egw --help` | See all commands |
-
----
-
-## Coming in the Next Release
-
-**Strong's Concordance integration** — look up original Hebrew and Greek words directly from KJV verses, with definitions, root meanings, and cross-references to EGW commentary on specific words. `egw --kjv "John 3:16" --strongs` is on the way.
-
----
-
-## Requirements
-
-- **Python 3.9+** — the installer finds it automatically. If missing, it offers to install via your package manager (apt, pacman, brew, dnf, winget). Or grab it from [python.org](https://python.org).
-- That's it. No pip packages, no Docker, no API keys, no configuration files.
-
-Everything lives in `~/.egw-tools/`. Uninstall by deleting that folder and removing `egw` from your PATH.
 
 ---
 
 ## EGW Corpus
 
-KJV works out of the box. When you first run any EGW command (like `--search`), the tool asks if you want to download the EGW corpus (~1.3 GB) from GitHub Releases. You can also trigger this manually with:
+The KJV Bible works out of the box — 31,009 verses, pre-built, no internet needed after install.
+
+The EGW corpus (~1.3 GB, 1M+ paragraphs) is downloaded on demand. The first time you run any EGW command, the tool asks:
+
+> Download it now? [y/N]
+
+Type `y` and it downloads with a progress bar. You can also trigger this manually:
 
 ```
 egw --egw-download
 ```
 
-The download is resumable — if interrupted, just run it again.
+---
+
+## Coming Soon
+
+**Strong's Concordance** — Hebrew and Greek word lookup directly from KJV verses:
+
+```
+egw --kjv "John 3:16" --strongs
+```
+
+Definitions, root words, and EGW commentary cross-referenced by original language.
 
 ---
 
-## How It Works (Technical Details)
+## Requirements
 
-### KJV: Pre-Built, Instant
-The KJV database ships pre-built with the installer (31,009 verses, 12 MB SQLite database with FTS5 full-text indexing). No background build process. No external API calls. No waiting. First `--kjv` command works instantly, and KJV features work completely offline after install.
+- **Python 3.9+** — if missing, the installer offers to get it for you
+- That's it. No dependencies. No config files.
 
-### EGW: On-Demand Download
-The EGW corpus (~1.3 GB, 1M+ paragraphs) is downloaded from GitHub Releases when you choose to. Once downloaded, all EGW features work fully offline. The prompt is clear about the size and asks permission before downloading.
+Everything lives in `~/.egw-tools/`. To uninstall, delete that folder and remove `egw` from your PATH.
+
+---
+
+## How It Works
+
+### Architecture
+
+The tool is a single Python file with no external dependencies beyond the standard library. It connects to two SQLite databases — one for KJV (12 MB, pre-built and shipped with the installer) and one for EGW (1.3 GB, downloaded on demand from GitHub Releases).
 
 ### Search Engine
-Both databases use **SQLite FTS5** — the same full-text engine that powers major applications. Searches are ranked by relevance and return in milliseconds.
+
+Both databases use **SQLite FTS5** for full-text search. Queries are ranked by relevance and return in milliseconds across 31K Bible verses and 1M+ EGW paragraphs. The fallback is a standard LIKE scan with proper wildcard escaping — FTS5 catches the vast majority of queries first.
+
+### KJV Database
+
+Pre-built from the public domain King James text. Ships as a 12 MB SQLite database with the following schema:
+
+```
+verses        — book_name, book_abbr, chapter, verse, text, reference
+verses_fts    — FTS5 index on book_name + text
+```
+
+31,009 verses (23,125 OT, 7,884 NT). No build step. No API calls.
+
+### EGW Database
+
+Downloaded from GitHub Releases on demand. Schema:
+
+```
+paragraphs       — content with book_code, page, paragraph, chapter_num
+paragraphs_fts   — FTS5 full-text index
+bible_refs       — verse cross-references (normalized formatting)
+topics           — topical index entries
+book_index       — per-book metadata
+```
+
+The download is a single-file transfer with a progress bar. The database is validated with `PRAGMA integrity_check` on every connection.
+
+### LIKE Safety
+
+All user input that reaches a SQLite LIKE clause is escaped — `%` and `_` wildcards are treated as literal characters, and every LIKE query uses `ESCAPE '\'` to prevent unintended pattern matching.
 
 ### Self-Updating
-`egw --update` queries the GitHub Releases API for the latest version tag and atomically replaces itself (old version saved as `.bak`). This is the only automatic internet connection — everything else requires your explicit action.
+
+`egw --update` queries the GitHub Releases API, compares version tags, and atomically replaces itself (old version saved as `.bak`).
 
 ### Cross-Platform
-Pure Python with zero compiled dependencies. Works identically on Linux, macOS, and Windows. The Windows installer creates a `.bat` wrapper so `egw` works natively in Command Prompt and PowerShell.
 
-### Database Schema
-
-**KJV** (`kjv.db`):
-- `verses` — book_name, book_abbr, chapter, verse, text, reference
-- `verses_fts` — FTS5 full-text index on book_name + text
-
-**EGW** (`egw-corpus.db`):
-- `paragraphs` — content with book_code, page, paragraph, chapter_num
-- `paragraphs_fts` — FTS5 full-text index
-- `bible_refs` — verse cross-references with normalized formatting
-- `topics` — topical index entries
-- `book_index` — per-book metadata
+Pure Python, zero compiled dependencies. Works identically on Linux, macOS, and Windows. The Windows installer creates a `.bat` wrapper for native Command Prompt and PowerShell use.
 
 ---
 
 ## License
 
-MIT — use it however you want.
+MIT

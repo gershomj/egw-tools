@@ -14,7 +14,7 @@ egw — EGW writings + KJV Bible search. Zero config. One command.
 
 KJV database is pre-built and included. EGW corpus downloaded on demand.
 """
-__version__ = "2.0.0"
+__version__ = "2.0.1"
 __repo__   = "gershomj/egw-tools"
 
 import sqlite3, sys, os, re, json, subprocess, time
@@ -48,6 +48,10 @@ def hl(text, term, ctx=80):
     s = max(0, idx-ctx); e = min(len(text), idx+len(term)+ctx)
     pre = '...' if s>0 else ''; post = '...' if e<len(text) else ''
     return pre + re.sub(f'(?i)({re.escape(term)})', r'**\1**', text[s:e]) + post
+
+def like_escape(s):
+    """Escape SQLite LIKE wildcards % and _ in user input."""
+    return s.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
 
 # ═══════════════ EGW CORPUS DOWNLOAD ═══════════════
 
@@ -117,8 +121,18 @@ def egw_download():
                         print(f"\r  {pct:.0f}%  {mb:.0f}/{total_mb:.0f} MB", end='', flush=True)
             print()
         print("Done.")
-        print(f"  {EGW_DB}")
-        print(f"  Run 'egw --search \"sabbath\"' to test.")
+        # Quick integrity check (avoids full scan)
+        try:
+            db = sqlite3.connect(str(EGW_DB))
+            ok = db.execute("PRAGMA quick_check").fetchone()[0]
+            db.close()
+            if ok != "ok":
+                print(f"  Warning: database may be corrupted ({ok}). Try re-downloading.")
+            else:
+                print(f"  Verified: {EGW_DB}")
+                print(f"  Run 'egw --search \"sabbath\"' to test.")
+        except sqlite3.Error as e:
+            print(f"  Warning: {e}")
     except Exception as e:
         EGW_DB.unlink(missing_ok=True)
         print(f"\nDownload failed: {e}")
@@ -161,9 +175,9 @@ def search(conn, query, book=None, limit=30):
     if not rows:
         cur = conn.execute(f'''
             SELECT book_title,book_code,page,paragraph,content,para_id
-            FROM paragraphs WHERE content LIKE ? {book_f}
+            FROM paragraphs WHERE content LIKE ? ESCAPE '\\' {book_f}
             AND element_type='p' LIMIT ?
-        ''', [f'%{query}%'] + params + [limit])
+        ''', [f'%{like_escape(query)}%'] + params + [limit])
         rows = cur.fetchall()
     return rows
 
@@ -185,14 +199,14 @@ def phrase_near(conn, w1, w2, dist=10, book=None):
 
 def stats(conn, term, book=None):
     bf = "AND book_code=?" if book else ""
-    params = [f'%{term}%', book] if book else [f'%{term}%']
-    cur = conn.execute(f'SELECT book_code,book_title,COUNT(*) FROM paragraphs WHERE element_type="p" AND content LIKE ? {bf} GROUP BY book_code ORDER BY COUNT(*) DESC LIMIT 25', params)
+    params = [f'%{like_escape(term)}%', book] if book else [f'%{like_escape(term)}%']
+    cur = conn.execute(f'SELECT book_code,book_title,COUNT(*) FROM paragraphs WHERE element_type="p" AND content LIKE ? ESCAPE \'\\\' {bf} GROUP BY book_code ORDER BY COUNT(*) DESC LIMIT 25', params)
     return cur.fetchall()
 
 def concordance(conn, term, book=None):
     bf = "AND book_code=?" if book else ""
-    params = [f'%{term}%', book] if book else [f'%{term}%']
-    cur = conn.execute(f'SELECT book_code,page,paragraph,content FROM paragraphs WHERE element_type="p" AND content LIKE ? {bf} ORDER BY book_code,page,paragraph LIMIT 200', params)
+    params = [f'%{like_escape(term)}%', book] if book else [f'%{like_escape(term)}%']
+    cur = conn.execute(f'SELECT book_code,page,paragraph,content FROM paragraphs WHERE element_type="p" AND content LIKE ? ESCAPE \'\\\' {bf} ORDER BY book_code,page,paragraph LIMIT 200', params)
     return cur.fetchall()
 
 # ═══════════════ BIBLE (EGW refs) ═══════════════
@@ -201,8 +215,8 @@ def bible_lookup(conn, ref):
     ref_clean = ref.strip().replace('–','-').replace('—','-')
     cur = conn.execute('''SELECT p.book_title,p.book_code,p.page,p.paragraph,p.content,p.para_id
         FROM bible_refs br JOIN paragraphs p ON br.para_id=p.para_id
-        WHERE br.ref_text LIKE ? OR br.ref_text LIKE ?
-        ORDER BY p.book_title LIMIT 50''', (f'%{ref_clean}%', f'%{ref_clean.replace(" ","%")}%'))
+        WHERE br.ref_text LIKE ? ESCAPE '\\' OR br.ref_text LIKE ? ESCAPE '\\'
+        ORDER BY p.book_title LIMIT 50''', (f'%{like_escape(ref_clean)}%', f'%{like_escape(ref_clean.replace(" ","%"))}%'))
     return cur.fetchall()
 
 def bible_refs_in_passage(conn, code, page):
@@ -230,13 +244,13 @@ def bible_stats(conn):
 
 def topic_search(conn, query, limit=20):
     cur = conn.execute('''SELECT topic,subtopic,book_code,page,paragraph,content
-        FROM topics WHERE topic LIKE ? OR subtopic LIKE ? OR content LIKE ?
-        LIMIT ?''', (f'%{query}%',f'%{query}%',f'%{query}%',limit))
+        FROM topics WHERE topic LIKE ? ESCAPE '\\' OR subtopic LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\'
+        LIMIT ?''', (f'%{like_escape(query)}%',f'%{like_escape(query)}%',f'%{like_escape(query)}%',limit))
     return cur.fetchall()
 
 def list_topics(conn, prefix=None):
     if prefix:
-        cur = conn.execute('SELECT DISTINCT topic FROM topics WHERE topic LIKE ? ORDER BY topic', (f'{prefix}%',))
+        cur = conn.execute("SELECT DISTINCT topic FROM topics WHERE topic LIKE ? ESCAPE '\\' ORDER BY topic", (f'{like_escape(prefix)}%',))
     else:
         cur = conn.execute('SELECT DISTINCT topic FROM topics ORDER BY topic LIMIT 200')
     return cur.fetchall()
@@ -274,9 +288,9 @@ def cite(conn, code, page, para=None):
 
 def person_search(conn, name):
     cur = conn.execute('''SELECT book_title,book_code,page,paragraph,content FROM paragraphs
-        WHERE element_type="p" AND (content LIKE ?)
+        WHERE element_type="p" AND (content LIKE ? ESCAPE '\\')
         AND (book_code LIKE "%LtMs%" OR book_code LIKE "%MR%" OR book_code LIKE "%BIO%")
-        ORDER BY book_code LIMIT 30''', (f'%{name}%',))
+        ORDER BY book_code LIMIT 30''', (f'%{like_escape(name)}%',))
     return cur.fetchall()
 
 # ═══════════════ DISCOVERY ═══════════════
@@ -291,7 +305,7 @@ def book_info(conn, code):
 
 def list_books(conn, filt=None):
     if filt:
-        cur = conn.execute('SELECT book_code,book_title,year,paragraph_count FROM book_index WHERE book_title LIKE ? OR book_code LIKE ? ORDER BY year,book_title', (f'%{filt}%',f'%{filt}%'))
+        cur = conn.execute("SELECT book_code,book_title,year,paragraph_count FROM book_index WHERE book_title LIKE ? ESCAPE '\\' OR book_code LIKE ? ESCAPE '\\' ORDER BY year,book_title", (f'%{like_escape(filt)}%',f'%{like_escape(filt)}%'))
     else:
         cur = conn.execute('SELECT book_code,book_title,year,paragraph_count FROM book_index ORDER BY year,book_title')
     return cur.fetchall()
@@ -560,13 +574,13 @@ def main():
         query = args[1]; book = None
         if len(args) > 2 and args[2] == '--book': book = nc(args[3])
         rows = concordance(conn, query, book)
-        print(f'\nConcordance: "{query}" — {len(rows)} results\\n')
+        print(f'\nConcordance: "{query}" — {len(rows)} results\n')
         for code,page,para,content in rows:
             print(f'[{code} p{page}.{para or "?"}] {hl(content,query)[:200]}')
 
     elif cmd == '--bible':
         rows = bible_lookup(conn, args[1])
-        print(f'\nEGW citing "{args[1]}" — {len(rows)} results\\n{"─"*70}')
+        print(f'\nEGW citing "{args[1]}" — {len(rows)} results\n{"─"*70}')
         for title,code,page,para,content,pid in rows:
             ref = f'p{page}' + (f'.{para}' if para else '')
             print(f'[{code} {ref}] {title}\n  {hl(content,args[1])[:250]}\n')
