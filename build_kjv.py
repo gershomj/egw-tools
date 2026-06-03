@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
 """Build KJV Bible SQLite database with FTS5 from bible-api.com. Resumable + rate-limit aware."""
-import sqlite3, requests, time, sys, os, json
+import sqlite3, time, sys, os, json, subprocess
 
-DB = os.path.expanduser("~/.hermes/kjv.db")
+# Auto-install requests if missing
+try:
+    import requests
+except ImportError:
+    print("Installing requests...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", "requests"])
+    import requests
+
+DB = os.environ.get("KJV_DB", os.path.join(os.path.expanduser("~/.egw-tools"), "kjv.db"))
 API = "https://bible-api.com/{book}+{chapter}?translation=kjv"
 
 BOOKS = [
@@ -33,6 +41,7 @@ BOOKS = [
 
 # Check if DB exists and find resume point
 resume_chapter = None
+os.makedirs(os.path.dirname(DB), exist_ok=True)
 if os.path.exists(DB):
     conn = sqlite3.connect(DB)
     done_books = conn.execute("SELECT DISTINCT book_abbr FROM verses").fetchall()

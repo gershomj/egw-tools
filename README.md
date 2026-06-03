@@ -1,110 +1,77 @@
-# EGW Research Suite
+# egw — EGW Writings + KJV Bible Search
 
-FTS5-powered command-line research tool for **Ellen G. White writings** and the **King James Bible**.
+One command. Zero config. Works on Linux, macOS, and Windows.
 
 ```
-egw --search "sanctuary"       # Full-text search EGW corpus
-egw --kjv "John 3:16"          # Look up a KJV verse
-egw --kjv-search "faith hope"  # Search KJV by keyword
-egw --bible "Revelation 13"    # Find EGW quoting a verse
-egw GC 456.1                   # Exact paragraph lookup
+egw --kjv "John 3:16"          # KJV verse
+egw --search "sanctuary"       # EGW corpus search
+egw --bible "Revelation 13"    # EGW citing verse
 ```
-
-## Features
-
-### EGW Corpus Search
-- **FTS5 full-text search** with ranking — 1M+ paragraphs across 758 works
-- **84K Bible cross-references** — find every EGW quote citing a specific verse
-- **72K topics** — browse or search the topical index
-- **Proximity search** — find words within N words of each other
-- **Exact lookup** — `egw GC 456.1` → instant paragraph
-- **Chapter view**, **concordance**, **frequency stats**, **edition comparison**
-- **Person search** — find letters/manuscripts mentioning someone
-
-### KJV Bible
-- **Verse lookup** — `egw --kjv "John 3:16-18"` with range support
-- **FTS5 keyword search** — `egw --kjv-search "faith hope charity"`
-- **Full chapter** — `egw --kjv-chapter "Psalm 23"`
-- All 66 books, 31,102 verses, authorized King James text
-
-### Self-Updating
-- `egw --update` checks GitHub releases and installs the latest version
-- `egw --version` shows current version
 
 ## Install
 
+### Linux / macOS
 ```bash
-# Download the script
-curl -O https://raw.githubusercontent.com/gershomj/egw-tools/main/egw
-chmod +x egw
-sudo mv egw /usr/local/bin/
-
-# Build the KJV Bible database (~3 MB, takes ~40 min)
-python3 build_kjv.py
+curl -sSL https://raw.githubusercontent.com/gershomj/egw-tools/main/install.sh | bash
 ```
 
-## Database Setup
-
-The tool needs SQLite databases to search. Set paths via environment variables:
-
-```bash
-export EGW_DB=/path/to/egw-corpus.db    # default: ~/.hermes/egw-corpus.db
-export KJV_DB=/path/to/kjv.db           # default: ~/.hermes/kjv.db
+### Windows (PowerShell)
+```powershell
+irm https://raw.githubusercontent.com/gershomj/egw-tools/main/install.ps1 | iex
 ```
 
-### KJV Bible
-Run `build_kjv.py` to download and index the complete KJV from the free bible-api.com service. Requires Python 3.9+ and the `requests` library. The resulting database is ~3 MB with FTS5 indexing.
+That's it. The KJV Bible builds automatically in the background on first use (~40 minutes). You can use the tool immediately.
 
-### EGW Corpus
-The EGW database must be built separately from EGW text sources. The expected schema:
+## What it does
 
-| Table | Purpose |
+| Command | Result |
 |---|---|
-| `paragraphs` | Main content with book_code, page, paragraph, chapter_num, content |
-| `paragraphs_fts` | FTS5 index on paragraph content |
-| `bible_refs` | Bible cross-references (para_id, ref_text) |
-| `topics` | Topical index (topic, subtopic, book_code, page) |
-| `book_index` | Book metadata (book_code, title, year, paragraph_count) |
-
-## Usage
-
-```bash
-# ── EGW Corpus ──
-egw --search "sabbath school" --limit 10      # FTS5 search
-egw --search "sanctuary" --book GC             # Filter by book
-egw --near "faith works" 10                    # Proximity search
-egw --stats "grace"                            # Frequency by book
-egw --concordance "blood"                      # Every occurrence
-egw --bible "John 3:16"                        # EGW quoting this verse
-egw --bible-refs GC 456                        # Bible refs in passage
-egw --bible-stats                              # Most-quoted Bible books
-egw --topic "health reform"                    # Topical search
-egw --topics                                   # List all topics
-egw --list                                     # Browse all books
-egw --info GC                                  # Book metadata
-egw --chapter GC 41                            # Full chapter
-egw --diff GC GC88 456                         # Compare editions
-egw --cite GC 456.1                            # Formatted citation
-egw --person "James White"                     # Find letters mentioning
-
-# ── KJV Bible ──
-egw --kjv "John 3:16"                          # Verse lookup
-egw --kjv "Romans 8:28-30"                     # Verse range
-egw --kjv-search "living water" --limit 20     # FTS5 search
-egw --kjv-chapter "Psalm 23"                   # Full chapter
-
-# ── System ──
-egw --update                                   # Update to latest release
-egw --version                                  # Show version
-```
+| `egw --kjv "John 3:16"` | Look up a KJV verse |
+| `egw --kjv "Romans 8:28-30"` | Verse range |
+| `egw --kjv-search "living water"` | FTS5 search KJV |
+| `egw --kjv-chapter "Psalm 23"` | Full chapter |
+| `egw --search "sabbath school"` | FTS5 search EGW |
+| `egw --search "prayer" --book SC` | Filter by book |
+| `egw --bible "John 3:16"` | Find EGW citing verse |
+| `egw --bible-stats` | Most-quoted Bible books |
+| `egw --stats "grace"` | Term frequency |
+| `egw --near "faith works" 10` | Proximity search |
+| `egw --topic "sanctuary"` | Topical index |
+| `egw --chapter GC 41` | Full chapter |
+| `egw --cite GC 456.1` | Formatted citation |
+| `egw --person "James White"` | Letters mentioning |
+| `egw --list` | Browse all books |
+| `egw GC 456.1` | Exact paragraph |
+| `egw --update` | Update to latest |
+| `egw --version` | Show version |
+| `egw --kjv-status` | KJV build progress |
 
 ## Requirements
 
-- Python 3.9+
-- SQLite3 (built-in)
-- `requests` (for `build_kjv.py` only)
-- Zero external Python dependencies for the main tool
+- Python 3.9+ (auto-detected by installer)
+- Nothing else. No pip packages. No Docker. No config files.
+
+Everything lives in `~/.egw-tools/`. The installer puts `egw` in your PATH.
+
+## EGW Database
+
+KJV works out of the box. For EGW search, place an `egw-corpus.db` in `~/.egw-tools/`.
+
+The expected schema:
+- `paragraphs` — book_code, page, paragraph, content, chapter_num
+- `paragraphs_fts` — FTS5 index
+- `bible_refs` — cross-references
+- `topics` — topical index
+- `book_index` — book metadata
+
+## Updating
+
+```bash
+egw --update
+```
+
+Checks GitHub for latest release, downloads, replaces itself. One command.
 
 ## License
 
-MIT — do whatever you want with it.
+MIT

@@ -1,27 +1,34 @@
 #!/usr/bin/env python3
 """
-EGW Research Suite — FTS5-powered search for EGW writings + KJV Bible.
+egw — EGW writings + KJV Bible search. Zero config. One command.
 
-Usage:
-  egw --search "sanctuary"        FTS5 full-text search
-  egw --kjv "John 3:16"           KJV verse lookup
-  egw --kjv-search "faith hope"   KJV keyword search
-  egw --update                    Update to latest release
+  egw --search "sanctuary"     Search EGW corpus
+  egw --kjv "John 3:16"        KJV verse lookup
+  egw --kjv "John 3:16-18"     KJV verse range
+  egw --kjv-search "faith"     KJV keyword search
+  egw --kjv-chapter "John 3"   KJV full chapter
+  egw --bible "John 3:16"      Find EGW quoting a verse
+  egw --update                 Update to latest release
+  egw --version                Show version
+  egw GC 456.1                 Exact EGW paragraph lookup
 
-Databases set via environment variables:
-  EGW_DB   — path to EGW SQLite corpus (default: ~/.hermes/egw-corpus.db)
-  KJV_DB   — path to KJV SQLite Bible  (default: ~/.hermes/kjv.db)
+KJV database builds automatically on first use (~40 min in background).
 """
-__version__ = "1.0.0"
-__repo__ = "gershomj/egw-tools"
+__version__ = "1.1.0"
+__repo__   = "gershomj/egw-tools"
 
-import sqlite3, sys, os, re, json
+import sqlite3, sys, os, re, json, subprocess, time
 from pathlib import Path
 from urllib.request import urlopen, Request
 
-# ── Database paths ────────────────────────────────────────────
-DB = Path(os.environ.get("EGW_DB", os.path.expanduser("~/.hermes/egw-corpus.db")))
-KJV_DB = Path(os.environ.get("KJV_DB", os.path.expanduser("~/.hermes/kjv.db")))
+# ── Zero-config paths ──────────────────────────────────────
+HOME    = Path(os.environ.get("EGW_HOME", os.path.expanduser("~/.egw-tools")))
+HOME.mkdir(parents=True, exist_ok=True)
+EGW_DB  = HOME / "egw-corpus.db"
+KJV_DB  = HOME / "kjv.db"
+ME      = Path(__file__).resolve()
+MY_DIR  = ME.parent
+BUILDER = MY_DIR / "build_kjv.py"
 
 ALIASES = {
     'great controversy':'GC','desire of ages':'DA','acts of the apostles':'AA',
@@ -31,7 +38,7 @@ ALIASES = {
     'testimonies vol 1':'1T','testimonies vol 2':'2T','testimonies vol 3':'3T',
     'testimonies vol 4':'4T','testimonies vol 5':'5T','testimonies vol 6':'6T',
     'testimonies vol 7':'7T','testimonies vol 8':'8T','testimonies vol 9':'9T',
-    'desire of ages':'DA','great controversy 1888':'GC88',
+    'great controversy 1888':'GC88',
 }
 
 def nc(q): return ALIASES.get(q.strip().lower(), q.strip().upper())
@@ -42,6 +49,43 @@ def hl(text, term, ctx=80):
     s = max(0, idx-ctx); e = min(len(text), idx+len(term)+ctx)
     pre = '...' if s>0 else ''; post = '...' if e<len(text) else ''
     return pre + re.sub(f'(?i)({re.escape(term)})', r'**\1**', text[s:e]) + post
+
+# ═══════════════ KJV AUTO-BUILD ═══════════════
+
+def kjv_ensure():
+    """Build KJV database in background if missing. Non-blocking."""
+    if KJV_DB.exists():
+        return
+    if not BUILDER.exists():
+        print("build_kjv.py not found. Run: python3 build_kjv.py")
+        return
+    
+    # Start build in background
+    log = HOME / "kjv-build.log"
+    pidfile = HOME / "kjv-build.pid"
+    
+    # Check if already building
+    if pidfile.exists():
+        try:
+            pid = int(pidfile.read_text().strip())
+            os.kill(pid, 0)  # Check if alive
+            print(f"KJV build already running (PID {pid})")
+            print(f"  Check progress: tail -f {log}")
+            return
+        except (OSError, ValueError):
+            pidfile.unlink(missing_ok=True)
+    
+    print("Building KJV database in background...")
+    print(f"  This takes ~40 min. You can use EGW commands immediately.")
+    print(f"  Progress: tail -f {log}")
+    
+    with open(log, 'w') as f:
+        proc = subprocess.Popen(
+            [sys.executable, str(BUILDER)],
+            stdout=f, stderr=subprocess.STDOUT,
+            start_new_session=True
+        )
+    pidfile.write_text(str(proc.pid))
 
 # ═══════════════ SEARCH ═══════════════
 
@@ -201,10 +245,8 @@ def kjv_parse_ref(ref_str):
     m = re.match(r'(.+?)\s+(\d+):(\d+)(?:-(\d+))?$', ref_str.strip())
     if not m: return None
     book_name = m.group(1).strip()
-    chapter = int(m.group(2))
-    start = int(m.group(3))
+    chapter = int(m.group(2)); start = int(m.group(3))
     end = int(m.group(4)) if m.group(4) else start
-
     BOOK_MAP = {
         'genesis':'GEN','exodus':'EXO','leviticus':'LEV','numbers':'NUM',
         'deuteronomy':'DEU','joshua':'JOS','judges':'JDG','ruth':'RUT',
@@ -228,22 +270,24 @@ def kjv_parse_ref(ref_str):
     return (abbr, chapter, start, end) if abbr else None
 
 def kjv_lookup(ref_str):
+    kjv_ensure()
+    if not KJV_DB.exists():
+        return None, "KJV database still building. Check ~/.egw-tools/kjv-build.log"
     parsed = kjv_parse_ref(ref_str)
-    if not parsed:
-        return None, f"Could not parse reference: {ref_str}"
+    if not parsed: return None, f"Could not parse: {ref_str}"
     abbr, ch, start, end = parsed
     kjv = sqlite3.connect(str(KJV_DB))
     rows = kjv.execute(
         "SELECT book_name, chapter, verse, text FROM verses WHERE book_abbr=? AND chapter=? AND verse BETWEEN ? AND ? ORDER BY verse",
         (abbr, ch, start, end)).fetchall()
     kjv.close()
-    if rows:
-        ref_display = f"{rows[0][0]} {ch}:{start}" + (f"-{end}" if end > start else "")
-    else:
-        ref_display = ref_str
+    ref_display = f"{rows[0][0]} {ch}:{start}" + (f"-{end}" if end > start else "") if rows else ref_str
     return rows, ref_display
 
 def kjv_search(query, limit=30):
+    kjv_ensure()
+    if not KJV_DB.exists():
+        return [("", 0, 0, "KJV database still building. Check progress with: egw --kjv-status", "")]
     kjv = sqlite3.connect(str(KJV_DB))
     safe = query.replace('"','""')
     rows = kjv.execute(
@@ -253,9 +297,11 @@ def kjv_search(query, limit=30):
     return rows
 
 def kjv_chapter(ref_str):
+    kjv_ensure()
+    if not KJV_DB.exists():
+        return None, "KJV database still building. Check ~/.egw-tools/kjv-build.log"
     parsed = kjv_parse_ref(ref_str + ":1")
-    if not parsed:
-        return None, f"Could not parse: {ref_str}"
+    if not parsed: return None, f"Could not parse: {ref_str}"
     abbr, ch, _, _ = parsed
     kjv = sqlite3.connect(str(KJV_DB))
     rows = kjv.execute(
@@ -268,93 +314,138 @@ def kjv_chapter(ref_str):
 # ═══════════════ UPDATE ═══════════════
 
 def check_update():
-    """Check GitHub for latest release. Returns (version, download_url) or None."""
     try:
         req = Request(f"https://api.github.com/repos/{__repo__}/releases/latest")
         req.add_header("Accept", "application/vnd.github+json")
-        req.add_header("User-Agent", "egw-tools-updater")
+        req.add_header("User-Agent", "egw-updater")
         data = json.loads(urlopen(req, timeout=10).read())
         latest = data["tag_name"].lstrip("v")
         for asset in data.get("assets", []):
             if asset["name"] == "egw":
                 return latest, asset["browser_download_url"]
         return None
-    except Exception:
-        return None
+    except: return None
 
 def do_update():
-    """Download and install latest release."""
     result = check_update()
     if result is None:
-        print("Could not check for updates. Try: pip install --upgrade egw-tools")
-        sys.exit(1)
+        print("Could not check for updates."); sys.exit(1)
     latest, url = result
     if latest == __version__:
-        print(f"Already up to date (v{__version__})")
-        return
+        print(f"Already up to date (v{__version__})"); return
     print(f"Updating v{__version__} → v{latest}")
-    print(f"Downloading {url}...")
     try:
         data = urlopen(url, timeout=30).read()
-        me = Path(__file__)
-        backup = me.with_suffix(".bak")
-        me.rename(backup)
-        me.write_bytes(data)
-        me.chmod(0o755)
-        print(f"Updated to v{latest}. Old version saved as {backup}")
+        backup = ME.with_suffix(".bak")
+        ME.rename(backup)
+        ME.write_bytes(data)
+        ME.chmod(0o755)
+        print(f"Updated. Old version: {backup}")
     except Exception as e:
-        print(f"Update failed: {e}")
-        sys.exit(1)
+        print(f"Update failed: {e}"); sys.exit(1)
 
 # ═══════════════ MAIN ═══════════════
 
 def usage():
-    print(f"""EGW Research Suite v{__version__}
-  egw GC 456.1                 Exact lookup
-  egw --chapter GC 41          Full chapter
-  egw --search "sanctuary"       Full-text search (FTS5)
-  egw --search "sabbath" --book GC   In specific book
-  egw --near "faith works" 10  Words within N words
-  egw --stats "grace"          Frequency by book
-  egw --concordance "blood"    Every occurrence
-  egw --bible "John 3:16"      Find EGW quoting this verse
-  egw --bible-refs GC 456      Bible refs in passage
-  egw --bible-stats            Most-quoted Bible books
-  egw --topic "sanctuary"      Search topical index
-  egw --diff GC GC88 456       Compare editions
-  egw --cite GC 456.1          Formatted citation
-  egw --person "James White"   Letters mentioning person
-  egw --info GC                Book metadata
-  egw --list [filter]          Browse books
-  egw --kjv "John 3:16"        Look up KJV verse
-  egw --kjv "John 3:16-18"     Verse range
-  egw --kjv-search "faith"     Search KJV by keyword
-  egw --kjv-chapter "John 3"   Read full chapter
-  egw --update                 Update to latest release
-  egw --version                Show version""")
+    print(f"""egw v{__version__} — EGW + KJV Bible Search
+
+  egw --search "sabbath"        FTS5 search EGW corpus
+  egw --search "prayer" --book SC   Filter by book
+  egw --kjv "John 3:16"         KJV verse lookup
+  egw --kjv "John 3:16-18"      KJV verse range
+  egw --kjv-search "faith hope" KJV keyword search
+  egw --kjv-chapter "Psalm 23"  KJV full chapter
+  egw --kjv-status              Check KJV build progress
+  egw --bible "John 3:16"       Find EGW citing a verse
+  egw --bible-stats             Most-quoted Bible books
+  egw --stats "grace"           Term frequency by book
+  egw --near "faith works" 10   Words within N words
+  egw --topic "sanctuary"       Search topical index
+  egw --chapter GC 41           Full chapter
+  egw --diff GC GC88 456        Compare editions
+  egw --cite GC 456.1           Formatted citation
+  egw --person "James White"    Letters mentioning
+  egw --list                    Browse all books
+  egw --info GC                 Book metadata
+  egw GC 456.1                  Exact paragraph lookup
+  egw --update                  Update to latest release
+  egw --version                 Show version
+
+Databases: ~/.egw-tools/  (auto-created on first use)
+KJV builds automatically on first --kjv command.""")
 
 def main():
     args = sys.argv[1:]
+    if not args: usage(); return
 
-    if not args:
-        usage()
-        return
-
-    # ── System commands (no DB needed) ──
-    if args[0] == '--update':
-        do_update()
-        return
-    if args[0] == '--version':
-        print(f"egw v{__version__}")
-        return
-
-    # ── EGW commands (need EGW DB) ──
-    if not DB.exists():
-        print(f"EGW database not found at {DB}")
-        print("Set EGW_DB env var or place it at ~/.hermes/egw-corpus.db")
-        sys.exit(1)
-    conn = sqlite3.connect(str(DB))
     cmd = args[0]
+
+    # System commands
+    if cmd == '--update': do_update(); return
+    if cmd == '--version': print(f"egw v{__version__}"); return
+    if cmd == '--help': usage(); return
+    if cmd == '--kjv-status':
+        log = HOME / "kjv-build.log"
+        pidfile = HOME / "kjv-build.pid"
+        if KJV_DB.exists():
+            kjv = sqlite3.connect(str(KJV_DB))
+            v = kjv.execute("SELECT COUNT(*) FROM verses").fetchone()[0]
+            kjv.close()
+            print(f"KJV database ready: {v:,} verses")
+        elif pidfile.exists():
+            try:
+                pid = int(pidfile.read_text().strip())
+                os.kill(pid, 0)
+                print(f"KJV build running (PID {pid})")
+                if log.exists():
+                    print(f"Last lines of {log}:")
+                    os.system(f"tail -5 {log}")
+            except OSError:
+                print("KJV build appears stalled. Remove ~/.egw-tools/kjv-build.pid and retry.")
+        else:
+            print("KJV database not built yet. Run any --kjv command to start building.")
+        return
+
+    # ══ KJV commands (no EGW DB needed) ══
+    if cmd == '--kjv':
+        rows, ref = kjv_lookup(args[1])
+        if rows is None: print(ref)
+        else:
+            print(f'\n{ref}\n{"─"*70}')
+            for _, ch, v, text in rows:
+                print(f'  [{v}] {text}')
+        return
+
+    if cmd == '--kjv-search':
+        limit = 30; qparts = [args[1]] if len(args) > 1 else []; i = 2
+        while i < len(args):
+            if args[i] == '--limit' and i+1 < len(args):
+                limit = int(args[i+1]); i += 2
+            else: qparts.append(args[i]); i += 1
+        query = ' '.join(qparts)
+        rows = kjv_search(query, limit)
+        print(f'\nKJV: "{query}" — {len(rows)} results\n{"─"*70}')
+        for book, ch, v, text, ref in rows:
+            print(f'  [{ref}] {text}')
+        return
+
+    if cmd == '--kjv-chapter':
+        rows, ref = kjv_chapter(args[1])
+        if rows is None: print(ref)
+        else:
+            print(f'\n{ref}\n{"─"*70}')
+            for _, ch, v, text in rows:
+                print(f'  [{v}] {text}')
+        return
+
+    # ══ EGW commands (need EGW DB) ══
+    if not EGW_DB.exists():
+        print(f"No EGW database at {EGW_DB}")
+        print("Place egw-corpus.db in ~/.egw-tools/ to enable EGW search.")
+        print("KJV commands (--kjv, --kjv-search, --kjv-chapter) work without it.")
+        sys.exit(1)
+
+    conn = sqlite3.connect(str(EGW_DB))
 
     if cmd == '--search':
         book, limit = None, 30; i = 1; qparts = []
@@ -392,8 +483,7 @@ def main():
         rows = stats(conn, args[1], nc(args[2]) if len(args) > 2 else None)
         print(f'\n"{args[1]}" frequency:\n')
         for code,title,cnt in rows:
-            bar = '█' * min(50, cnt // 2)
-            print(f'  {code:12s} {title[:45]:45s} {cnt:>5d} {bar}')
+            print(f'  {code:12s} {title[:45]:45s} {cnt:>5d} {"█"*min(50,cnt//2)}')
 
     elif cmd == '--concordance':
         book = nc(args[2]) if len(args) > 2 and args[2] != '--book' and not args[2].startswith('-') else None
@@ -401,8 +491,7 @@ def main():
         rows = concordance(conn, args[1], book)
         print(f'\nConcordance: "{args[1]}" — {len(rows)} occurrences\n')
         for code,page,para,content in rows:
-            ref = f'p{page}' + (f'.{para}' if para else '')
-            print(f'  {code} {ref}: {hl(content, args[1], 50)}')
+            print(f'  {code} p{page}' + (f'.{para}' if para else '') + f': {hl(content, args[1], 50)}')
 
     elif cmd == '--bible':
         rows = bible_lookup(conn, args[1])
@@ -421,8 +510,7 @@ def main():
         rows = bible_stats(conn)
         print('\nMost-quoted Bible books:\n')
         for book,cnt in rows:
-            bar = '█' * min(50, cnt // 20)
-            print(f'  {book:20s} {cnt:>5d} {bar}')
+            print(f'  {book:20s} {cnt:>5d} {"█"*min(50,cnt//20)}')
 
     elif cmd == '--topic':
         rows = topic_search(conn, args[1])
@@ -433,8 +521,7 @@ def main():
             print(f'  {topic}{sub_str}{ref_str}')
 
     elif cmd == '--topics':
-        prefix = args[1] if len(args) > 1 else None
-        for (t,) in list_topics(conn, prefix):
+        for (t,) in list_topics(conn, args[1] if len(args) > 1 else None):
             print(t)
 
     elif cmd == '--diff':
@@ -476,51 +563,7 @@ def main():
     elif cmd == '--list':
         rows = list_books(conn, args[1] if len(args) > 1 else None)
         for code,title,year,cnt in rows:
-            y = f'[{year}]' if year else ''
-            print(f'{code:15s} {y:8s} {title[:50]:50s} {cnt:>7,}')
-
-    elif cmd == '--kjv':
-        if not KJV_DB.exists():
-            print(f"KJV database not found at {KJV_DB}")
-            print("Run build_kjv.py to download it, or set KJV_DB env var")
-            conn.close(); return
-        rows, ref = kjv_lookup(args[1])
-        if rows is None:
-            print(ref)
-        else:
-            print(f'\n{ref}\n{"─"*70}')
-            for _, ch, v, text in rows:
-                print(f'  [{v}] {text}')
-
-    elif cmd == '--kjv-search':
-        if not KJV_DB.exists():
-            print(f"KJV database not found at {KJV_DB}")
-            print("Run build_kjv.py to download it, or set KJV_DB env var")
-            conn.close(); return
-        limit = 30; qparts = [args[1]] if len(args) > 1 else []; i = 2
-        while i < len(args):
-            if args[i] == '--limit' and i+1 < len(args):
-                limit = int(args[i+1]); i += 2
-            else:
-                qparts.append(args[i]); i += 1
-        query = ' '.join(qparts)
-        rows = kjv_search(query, limit)
-        print(f'\nKJV: "{query}" — {len(rows)} results\n{"─"*70}')
-        for book, ch, v, text, ref in rows:
-            print(f'  [{ref}] {text}')
-
-    elif cmd == '--kjv-chapter':
-        if not KJV_DB.exists():
-            print(f"KJV database not found at {KJV_DB}")
-            print("Run build_kjv.py to download it, or set KJV_DB env var")
-            conn.close(); return
-        rows, ref = kjv_chapter(args[1])
-        if rows is None:
-            print(ref)
-        else:
-            print(f'\n{ref}\n{"─"*70}')
-            for _, ch, v, text in rows:
-                print(f'  [{v}] {text}')
+            print(f'{code:15s} {f"[{year}]" if year else "":8s} {title[:50]:50s} {cnt:>7,}')
 
     else:
         parts = args[0].strip().split() if len(args) == 1 else args
@@ -533,13 +576,13 @@ def main():
                 rows = exact(conn, nc(parts[0]), pg, pa)
             except: rows = []
         else: rows = []
-        if not rows:
-            print('No results'); conn.close(); return
+        if not rows: print('No results'); conn.close(); return
         for title,p,pa,content in rows:
             ref = f'p{p}' + (f'.{pa}' if pa else '')
             print(f'\n{"="*70}\n{title}\nPage {p}, Paragraph {pa if pa else "—"}\n{"="*70}\n{content}')
 
-    conn.close()
+    if EGW_DB.exists():
+        conn.close()
 
 if __name__ == '__main__':
     main()
