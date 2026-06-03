@@ -1,0 +1,545 @@
+#!/usr/bin/env python3
+"""
+EGW Research Suite — FTS5-powered search for EGW writings + KJV Bible.
+
+Usage:
+  egw --search "sanctuary"        FTS5 full-text search
+  egw --kjv "John 3:16"           KJV verse lookup
+  egw --kjv-search "faith hope"   KJV keyword search
+  egw --update                    Update to latest release
+
+Databases set via environment variables:
+  EGW_DB   — path to EGW SQLite corpus (default: ~/.hermes/egw-corpus.db)
+  KJV_DB   — path to KJV SQLite Bible  (default: ~/.hermes/kjv.db)
+"""
+__version__ = "1.0.0"
+__repo__ = "gershomj/egw-tools"
+
+import sqlite3, sys, os, re, json
+from pathlib import Path
+from urllib.request import urlopen, Request
+
+# ── Database paths ────────────────────────────────────────────
+DB = Path(os.environ.get("EGW_DB", os.path.expanduser("~/.hermes/egw-corpus.db")))
+KJV_DB = Path(os.environ.get("KJV_DB", os.path.expanduser("~/.hermes/kjv.db")))
+
+ALIASES = {
+    'great controversy':'GC','desire of ages':'DA','acts of the apostles':'AA',
+    'patriarchs and prophets':'PP','prophets and kings':'PK','steps to christ':'SC',
+    "christ's object lessons":'COL','christs object lessons':'COL',
+    'ministry of healing':'MH','education':'Ed','early writings':'EW',
+    'testimonies vol 1':'1T','testimonies vol 2':'2T','testimonies vol 3':'3T',
+    'testimonies vol 4':'4T','testimonies vol 5':'5T','testimonies vol 6':'6T',
+    'testimonies vol 7':'7T','testimonies vol 8':'8T','testimonies vol 9':'9T',
+    'desire of ages':'DA','great controversy 1888':'GC88',
+}
+
+def nc(q): return ALIASES.get(q.strip().lower(), q.strip().upper())
+
+def hl(text, term, ctx=80):
+    idx = text.lower().find(term.lower()) if term else -1
+    if idx < 0: return text[:300]
+    s = max(0, idx-ctx); e = min(len(text), idx+len(term)+ctx)
+    pre = '...' if s>0 else ''; post = '...' if e<len(text) else ''
+    return pre + re.sub(f'(?i)({re.escape(term)})', r'**\1**', text[s:e]) + post
+
+# ═══════════════ SEARCH ═══════════════
+
+def search(conn, query, book=None, limit=30):
+    safe = query.replace('"','""')
+    book_f = "AND p.book_code = ?" if book else ""
+    params = [book] if book else []
+    cur = conn.execute(f'''
+        SELECT p.book_title,p.book_code,p.page,p.paragraph,p.content,p.para_id
+        FROM paragraphs_fts f JOIN paragraphs p ON f.para_id=p.para_id
+        WHERE paragraphs_fts MATCH ? {book_f}
+        AND p.content IS NOT NULL AND p.element_type='p'
+        ORDER BY rank LIMIT ?
+    ''', [f'"{safe}"'] + params + [limit])
+    rows = cur.fetchall()
+    if not rows:
+        cur = conn.execute(f'''
+            SELECT book_title,book_code,page,paragraph,content,para_id
+            FROM paragraphs WHERE content LIKE ? {book_f}
+            AND element_type='p' LIMIT ?
+        ''', [f'%{query}%'] + params + [limit])
+        rows = cur.fetchall()
+    return rows
+
+def phrase_near(conn, w1, w2, dist=10, book=None):
+    rows = search(conn, w1, book, 500)
+    results = []
+    for title,code,page,para,content,pid in rows:
+        words = content.split()
+        idx1 = [i for i,w in enumerate(words) if w1.lower() in w.lower()]
+        idx2 = [i for i,w in enumerate(words) if w2.lower() in w.lower()]
+        for i1 in idx1:
+            for i2 in idx2:
+                if abs(i1-i2) <= dist:
+                    results.append((title,code,page,para,content,i1,i2))
+                    break
+            else: continue
+            break
+    return results[:50]
+
+def stats(conn, term, book=None):
+    bf = "AND book_code=?" if book else ""
+    params = [f'%{term}%', book] if book else [f'%{term}%']
+    cur = conn.execute(f'SELECT book_code,book_title,COUNT(*) FROM paragraphs WHERE element_type="p" AND content LIKE ? {bf} GROUP BY book_code ORDER BY COUNT(*) DESC LIMIT 25', params)
+    return cur.fetchall()
+
+def concordance(conn, term, book=None):
+    bf = "AND book_code=?" if book else ""
+    params = [f'%{term}%', book] if book else [f'%{term}%']
+    cur = conn.execute(f'SELECT book_code,page,paragraph,content FROM paragraphs WHERE element_type="p" AND content LIKE ? {bf} ORDER BY book_code,page,paragraph LIMIT 200', params)
+    return cur.fetchall()
+
+# ═══════════════ BIBLE (EGW refs) ═══════════════
+
+def bible_lookup(conn, ref):
+    ref_clean = ref.strip().replace('–','-').replace('—','-')
+    cur = conn.execute('''SELECT p.book_title,p.book_code,p.page,p.paragraph,p.content,p.para_id
+        FROM bible_refs br JOIN paragraphs p ON br.para_id=p.para_id
+        WHERE br.ref_text LIKE ? OR br.ref_text LIKE ?
+        ORDER BY p.book_title LIMIT 50''', (f'%{ref_clean}%', f'%{ref_clean.replace(" ","%")}%'))
+    return cur.fetchall()
+
+def bible_refs_in_passage(conn, code, page):
+    cur = conn.execute('''SELECT page,paragraph,content,bible_refs FROM paragraphs
+        WHERE book_code=? AND page=? AND element_type="p" ORDER BY paragraph''', (code,page))
+    rows = cur.fetchall()
+    results = []
+    for p,pa,content,refs in rows:
+        if refs:
+            for r in json.loads(refs):
+                results.append((p,pa,r,content[:200]))
+    return results
+
+def bible_stats(conn):
+    cur = conn.execute('''SELECT 
+        CASE 
+            WHEN ref_normalized LIKE '1%' OR ref_normalized LIKE '2%' OR ref_normalized LIKE '3%'
+            THEN substr(ref_normalized,1,instr(ref_normalized||' ',' ')-1) || ' ' || substr(ref_normalized,instr(ref_normalized,' ')+1,3)
+            ELSE substr(ref_normalized,1,instr(ref_normalized||' ',' ')-1)
+        END as book, COUNT(*) as cnt
+        FROM bible_refs GROUP BY book ORDER BY cnt DESC LIMIT 30''')
+    return cur.fetchall()
+
+# ═══════════════ TOPICS ═══════════════
+
+def topic_search(conn, query, limit=20):
+    cur = conn.execute('''SELECT topic,subtopic,book_code,page,paragraph,content
+        FROM topics WHERE topic LIKE ? OR subtopic LIKE ? OR content LIKE ?
+        LIMIT ?''', (f'%{query}%',f'%{query}%',f'%{query}%',limit))
+    return cur.fetchall()
+
+def list_topics(conn, prefix=None):
+    if prefix:
+        cur = conn.execute('SELECT DISTINCT topic FROM topics WHERE topic LIKE ? ORDER BY topic', (f'{prefix}%',))
+    else:
+        cur = conn.execute('SELECT DISTINCT topic FROM topics ORDER BY topic LIMIT 200')
+    return cur.fetchall()
+
+# ═══════════════ REFERENCE ═══════════════
+
+def exact(conn, code, page, para=None):
+    if para:
+        cur = conn.execute('SELECT book_title,page,paragraph,content FROM paragraphs WHERE book_code=? AND page=? AND paragraph=? AND element_type="p"', (code,page,para))
+    else:
+        cur = conn.execute('SELECT book_title,page,paragraph,content FROM paragraphs WHERE book_code=? AND page=? AND element_type="p" ORDER BY paragraph', (code,page))
+    return cur.fetchall()
+
+def chapter_lookup(conn, code, chap):
+    cur = conn.execute('SELECT content FROM paragraphs WHERE book_code=? AND chapter_num=? AND element_type IN ("h1","h2","h3") LIMIT 1', (code,chap))
+    h = cur.fetchone()
+    cur = conn.execute('SELECT page,paragraph,content FROM paragraphs WHERE book_code=? AND chapter_num=? AND element_type="p" ORDER BY page,paragraph', (code,chap))
+    return cur.fetchall(), h[0] if h else f"Chapter {chap}"
+
+def book_diff(conn, code1, code2, page):
+    rows = []
+    for code in [code1, code2]:
+        cur = conn.execute('SELECT book_title,page,paragraph,content FROM paragraphs WHERE book_code=? AND page=? AND element_type="p" ORDER BY paragraph', (code,page))
+        rows.append((code, cur.fetchall()))
+    return rows
+
+def cite(conn, code, page, para=None):
+    cur = conn.execute('SELECT book_title,page,paragraph,content,year FROM paragraphs WHERE book_code=? AND page=? AND element_type="p" LIMIT 1', (code,page))
+    row = cur.fetchone()
+    if not row: return None
+    title, p, pa, content, year = row
+    ref = f"{title}, p. {p}"
+    if para: ref += f", \u00b6{para}"
+    return f"{ref}.\n\n{content[:500]}..."
+
+def person_search(conn, name):
+    cur = conn.execute('''SELECT book_title,book_code,page,paragraph,content FROM paragraphs
+        WHERE element_type="p" AND (content LIKE ?)
+        AND (book_code LIKE "%LtMs%" OR book_code LIKE "%MR%" OR book_code LIKE "%BIO%")
+        ORDER BY book_code LIMIT 30''', (f'%{name}%',))
+    return cur.fetchall()
+
+# ═══════════════ DISCOVERY ═══════════════
+
+def book_info(conn, code):
+    cur = conn.execute('SELECT * FROM book_index WHERE book_code=?', (code,))
+    row = cur.fetchone()
+    if not row:
+        cur = conn.execute('SELECT book_code,book_title,COUNT(*),MIN(year),MAX(year) FROM paragraphs WHERE book_code=?', (code,))
+        row = cur.fetchone()
+    return row
+
+def list_books(conn, filt=None):
+    if filt:
+        cur = conn.execute('SELECT book_code,book_title,year,paragraph_count FROM book_index WHERE book_title LIKE ? OR book_code LIKE ? ORDER BY year,book_title', (f'%{filt}%',f'%{filt}%'))
+    else:
+        cur = conn.execute('SELECT book_code,book_title,year,paragraph_count FROM book_index ORDER BY year,book_title')
+    return cur.fetchall()
+
+# ═══════════════ KJV BIBLE ═══════════════
+
+def kjv_parse_ref(ref_str):
+    m = re.match(r'(.+?)\s+(\d+):(\d+)(?:-(\d+))?$', ref_str.strip())
+    if not m: return None
+    book_name = m.group(1).strip()
+    chapter = int(m.group(2))
+    start = int(m.group(3))
+    end = int(m.group(4)) if m.group(4) else start
+
+    BOOK_MAP = {
+        'genesis':'GEN','exodus':'EXO','leviticus':'LEV','numbers':'NUM',
+        'deuteronomy':'DEU','joshua':'JOS','judges':'JDG','ruth':'RUT',
+        '1 samuel':'1SA','2 samuel':'2SA','1 kings':'1KI','2 kings':'2KI',
+        '1 chronicles':'1CH','2 chronicles':'2CH','ezra':'EZR','nehemiah':'NEH',
+        'esther':'EST','job':'JOB','psalm':'PSA','psalms':'PSA','proverbs':'PRO',
+        'ecclesiastes':'ECC','song of solomon':'SNG','isaiah':'ISA','jeremiah':'JER',
+        'lamentations':'LAM','ezekiel':'EZK','daniel':'DAN','hosea':'HOS',
+        'joel':'JOL','amos':'AMO','obadiah':'OBA','jonah':'JON','micah':'MIC',
+        'nahum':'NAM','habakkuk':'HAB','zephaniah':'ZEP','haggai':'HAG',
+        'zechariah':'ZEC','malachi':'MAL',
+        'matthew':'MAT','mark':'MRK','luke':'LUK','john':'JHN','acts':'ACT',
+        'romans':'ROM','1 corinthians':'1CO','2 corinthians':'2CO',
+        'galatians':'GAL','ephesians':'EPH','philippians':'PHP','colossians':'COL',
+        '1 thessalonians':'1TH','2 thessalonians':'2TH','1 timothy':'1TI',
+        '2 timothy':'2TI','titus':'TIT','philemon':'PHM','hebrews':'HEB',
+        'james':'JAS','1 peter':'1PE','2 peter':'2PE','1 john':'1JN',
+        '2 john':'2JN','3 john':'3JN','jude':'JUD','revelation':'REV',
+    }
+    abbr = BOOK_MAP.get(book_name.lower())
+    return (abbr, chapter, start, end) if abbr else None
+
+def kjv_lookup(ref_str):
+    parsed = kjv_parse_ref(ref_str)
+    if not parsed:
+        return None, f"Could not parse reference: {ref_str}"
+    abbr, ch, start, end = parsed
+    kjv = sqlite3.connect(str(KJV_DB))
+    rows = kjv.execute(
+        "SELECT book_name, chapter, verse, text FROM verses WHERE book_abbr=? AND chapter=? AND verse BETWEEN ? AND ? ORDER BY verse",
+        (abbr, ch, start, end)).fetchall()
+    kjv.close()
+    if rows:
+        ref_display = f"{rows[0][0]} {ch}:{start}" + (f"-{end}" if end > start else "")
+    else:
+        ref_display = ref_str
+    return rows, ref_display
+
+def kjv_search(query, limit=30):
+    kjv = sqlite3.connect(str(KJV_DB))
+    safe = query.replace('"','""')
+    rows = kjv.execute(
+        "SELECT book_name, chapter, verse, text, reference FROM verses_fts WHERE verses_fts MATCH ? ORDER BY rank LIMIT ?",
+        (f'"{safe}"', limit)).fetchall()
+    kjv.close()
+    return rows
+
+def kjv_chapter(ref_str):
+    parsed = kjv_parse_ref(ref_str + ":1")
+    if not parsed:
+        return None, f"Could not parse: {ref_str}"
+    abbr, ch, _, _ = parsed
+    kjv = sqlite3.connect(str(KJV_DB))
+    rows = kjv.execute(
+        "SELECT book_name, chapter, verse, text FROM verses WHERE book_abbr=? AND chapter=? ORDER BY verse",
+        (abbr, ch)).fetchall()
+    kjv.close()
+    ref_display = f"{rows[0][0]} {ch}" if rows else ref_str
+    return rows, ref_display
+
+# ═══════════════ UPDATE ═══════════════
+
+def check_update():
+    """Check GitHub for latest release. Returns (version, download_url) or None."""
+    try:
+        req = Request(f"https://api.github.com/repos/{__repo__}/releases/latest")
+        req.add_header("Accept", "application/vnd.github+json")
+        req.add_header("User-Agent", "egw-tools-updater")
+        data = json.loads(urlopen(req, timeout=10).read())
+        latest = data["tag_name"].lstrip("v")
+        for asset in data.get("assets", []):
+            if asset["name"] == "egw":
+                return latest, asset["browser_download_url"]
+        return None
+    except Exception:
+        return None
+
+def do_update():
+    """Download and install latest release."""
+    result = check_update()
+    if result is None:
+        print("Could not check for updates. Try: pip install --upgrade egw-tools")
+        sys.exit(1)
+    latest, url = result
+    if latest == __version__:
+        print(f"Already up to date (v{__version__})")
+        return
+    print(f"Updating v{__version__} → v{latest}")
+    print(f"Downloading {url}...")
+    try:
+        data = urlopen(url, timeout=30).read()
+        me = Path(__file__)
+        backup = me.with_suffix(".bak")
+        me.rename(backup)
+        me.write_bytes(data)
+        me.chmod(0o755)
+        print(f"Updated to v{latest}. Old version saved as {backup}")
+    except Exception as e:
+        print(f"Update failed: {e}")
+        sys.exit(1)
+
+# ═══════════════ MAIN ═══════════════
+
+def usage():
+    print(f"""EGW Research Suite v{__version__}
+  egw GC 456.1                 Exact lookup
+  egw --chapter GC 41          Full chapter
+  egw --search "sanctuary"       Full-text search (FTS5)
+  egw --search "sabbath" --book GC   In specific book
+  egw --near "faith works" 10  Words within N words
+  egw --stats "grace"          Frequency by book
+  egw --concordance "blood"    Every occurrence
+  egw --bible "John 3:16"      Find EGW quoting this verse
+  egw --bible-refs GC 456      Bible refs in passage
+  egw --bible-stats            Most-quoted Bible books
+  egw --topic "sanctuary"      Search topical index
+  egw --diff GC GC88 456       Compare editions
+  egw --cite GC 456.1          Formatted citation
+  egw --person "James White"   Letters mentioning person
+  egw --info GC                Book metadata
+  egw --list [filter]          Browse books
+  egw --kjv "John 3:16"        Look up KJV verse
+  egw --kjv "John 3:16-18"     Verse range
+  egw --kjv-search "faith"     Search KJV by keyword
+  egw --kjv-chapter "John 3"   Read full chapter
+  egw --update                 Update to latest release
+  egw --version                Show version""")
+
+def main():
+    args = sys.argv[1:]
+
+    if not args:
+        usage()
+        return
+
+    # ── System commands (no DB needed) ──
+    if args[0] == '--update':
+        do_update()
+        return
+    if args[0] == '--version':
+        print(f"egw v{__version__}")
+        return
+
+    # ── EGW commands (need EGW DB) ──
+    if not DB.exists():
+        print(f"EGW database not found at {DB}")
+        print("Set EGW_DB env var or place it at ~/.hermes/egw-corpus.db")
+        sys.exit(1)
+    conn = sqlite3.connect(str(DB))
+    cmd = args[0]
+
+    if cmd == '--search':
+        book, limit = None, 30; i = 1; qparts = []
+        while i < len(args):
+            if args[i] == '--book' and i+1 < len(args): book = nc(args[i+1]); i += 2
+            elif args[i] == '--limit' and i+1 < len(args): limit = int(args[i+1]); i += 2
+            else: qparts.append(args[i]); i += 1
+        query = ' '.join(qparts)
+        rows = search(conn, query, book, limit)
+        b = " in " + book if book else ""
+        print(f'\n"{query}"{b} — {len(rows)} results\n')
+        for title,code,page,para,content,pid in rows:
+            ref = f'p{page}' + (f'.{para}' if para else '')
+            print(f'[{code} {ref}] {title}\n  {hl(content,query.split()[0])}\n')
+
+    elif cmd == '--near':
+        words = args[1].split(); dist = 10; book = None; i = 2
+        while i < len(args):
+            if args[i] == '--book' and i+1 < len(args): book = nc(args[i+1]); i += 2
+            else:
+                try: dist = int(args[i]); i += 1
+                except: i += 1
+        rows = phrase_near(conn, words[0], words[1], dist, book)
+        print(f'\n"{words[0]}" ~ "{words[1]}" (≤{dist}w) — {len(rows)} matches\n')
+        for title,code,page,para,content,i1,i2 in rows:
+            ref = f'p{page}' + (f'.{para}' if para else '')
+            wlist = content.split()
+            s = max(0, min(i1,i2)-6); e = min(len(wlist), max(i1,i2)+7)
+            snip = ' '.join(wlist[s:e])
+            snip = re.sub(f'(?i)({re.escape(words[0])})', r'**\1**', snip)
+            snip = re.sub(f'(?i)({re.escape(words[1])})', r'**\1**', snip)
+            print(f'[{code} {ref}] ...{snip}...\n')
+
+    elif cmd == '--stats':
+        rows = stats(conn, args[1], nc(args[2]) if len(args) > 2 else None)
+        print(f'\n"{args[1]}" frequency:\n')
+        for code,title,cnt in rows:
+            bar = '█' * min(50, cnt // 2)
+            print(f'  {code:12s} {title[:45]:45s} {cnt:>5d} {bar}')
+
+    elif cmd == '--concordance':
+        book = nc(args[2]) if len(args) > 2 and args[2] != '--book' and not args[2].startswith('-') else None
+        if len(args) > 3 and args[2] == '--book': book = nc(args[3])
+        rows = concordance(conn, args[1], book)
+        print(f'\nConcordance: "{args[1]}" — {len(rows)} occurrences\n')
+        for code,page,para,content in rows:
+            ref = f'p{page}' + (f'.{para}' if para else '')
+            print(f'  {code} {ref}: {hl(content, args[1], 50)}')
+
+    elif cmd == '--bible':
+        rows = bible_lookup(conn, args[1])
+        print(f'\nEGW citing "{args[1]}" — {len(rows)} results\n')
+        for title,code,page,para,content,pid in rows:
+            ref = f'p{page}' + (f'.{para}' if para else '')
+            print(f'[{code} {ref}] {title}\n  {content[:250]}...\n')
+
+    elif cmd == '--bible-refs':
+        rows = bible_refs_in_passage(conn, nc(args[1]), int(args[2]))
+        print(f'\nBible refs in {args[1]} p{args[2]}:\n')
+        for p,pa,ref,ctx in rows:
+            print(f'  p{p}.{pa}: {ref}')
+
+    elif cmd == '--bible-stats':
+        rows = bible_stats(conn)
+        print('\nMost-quoted Bible books:\n')
+        for book,cnt in rows:
+            bar = '█' * min(50, cnt // 20)
+            print(f'  {book:20s} {cnt:>5d} {bar}')
+
+    elif cmd == '--topic':
+        rows = topic_search(conn, args[1])
+        print(f'\nTopic: "{args[1]}" — {len(rows)} entries\n')
+        for topic,sub,code,page,para,content in rows:
+            sub_str = f' > {sub}' if sub else ''
+            ref_str = f' [{code} p{page}.{para}]' if code else ''
+            print(f'  {topic}{sub_str}{ref_str}')
+
+    elif cmd == '--topics':
+        prefix = args[1] if len(args) > 1 else None
+        for (t,) in list_topics(conn, prefix):
+            print(t)
+
+    elif cmd == '--diff':
+        code1, code2, page = nc(args[1]), nc(args[2]), int(args[3])
+        for code, rows in book_diff(conn, code1, code2, page):
+            print(f'\n{"="*70}\n{code} — Page {page}\n{"="*70}')
+            for _,p,pa,content in rows:
+                print(f'\n\u00b6{pa}: {content}')
+
+    elif cmd == '--cite':
+        parts = args[1].strip().split()
+        if len(parts) >= 2 and '.' in parts[1]:
+            pg, pa = (parts[1].split('.', 1) + [None])[:2]
+            c = cite(conn, nc(parts[0]), int(pg), int(pa) if pa else None)
+        else:
+            c = cite(conn, nc(parts[0]), int(parts[1]) if len(parts) > 1 else None)
+        if c: print(c)
+
+    elif cmd == '--person':
+        rows = person_search(conn, args[1])
+        print(f'\n"{args[1]}" in letters/manuscripts — {len(rows)} results\n')
+        for title,code,page,para,content in rows:
+            ref = f'p{page}' + (f'.{para}' if para else '')
+            print(f'[{code} {ref}] {title}\n  {content[:250]}...\n')
+
+    elif cmd == '--info':
+        row = book_info(conn, nc(args[1]))
+        if row:
+            print(f'{row[0]}: {row[1]}\n  Year: {row[2]}\n  Category: {row[3]}\n  Paragraphs: {row[4]:,}')
+
+    elif cmd == '--chapter':
+        rows, heading = chapter_lookup(conn, nc(args[1]), int(args[2]))
+        title = rows[0][0] if rows else '?'
+        print(f'\n{"="*70}\n{title}\n{heading}\n{"="*70}')
+        for p,pa,content in rows:
+            if p is not None:
+                print(f'\n**[p{p}' + (f'.{pa}' if pa else '') + f']** {content}')
+
+    elif cmd == '--list':
+        rows = list_books(conn, args[1] if len(args) > 1 else None)
+        for code,title,year,cnt in rows:
+            y = f'[{year}]' if year else ''
+            print(f'{code:15s} {y:8s} {title[:50]:50s} {cnt:>7,}')
+
+    elif cmd == '--kjv':
+        if not KJV_DB.exists():
+            print(f"KJV database not found at {KJV_DB}")
+            print("Run build_kjv.py to download it, or set KJV_DB env var")
+            conn.close(); return
+        rows, ref = kjv_lookup(args[1])
+        if rows is None:
+            print(ref)
+        else:
+            print(f'\n{ref}\n{"─"*70}')
+            for _, ch, v, text in rows:
+                print(f'  [{v}] {text}')
+
+    elif cmd == '--kjv-search':
+        if not KJV_DB.exists():
+            print(f"KJV database not found at {KJV_DB}")
+            print("Run build_kjv.py to download it, or set KJV_DB env var")
+            conn.close(); return
+        limit = 30; qparts = [args[1]] if len(args) > 1 else []; i = 2
+        while i < len(args):
+            if args[i] == '--limit' and i+1 < len(args):
+                limit = int(args[i+1]); i += 2
+            else:
+                qparts.append(args[i]); i += 1
+        query = ' '.join(qparts)
+        rows = kjv_search(query, limit)
+        print(f'\nKJV: "{query}" — {len(rows)} results\n{"─"*70}')
+        for book, ch, v, text, ref in rows:
+            print(f'  [{ref}] {text}')
+
+    elif cmd == '--kjv-chapter':
+        if not KJV_DB.exists():
+            print(f"KJV database not found at {KJV_DB}")
+            print("Run build_kjv.py to download it, or set KJV_DB env var")
+            conn.close(); return
+        rows, ref = kjv_chapter(args[1])
+        if rows is None:
+            print(ref)
+        else:
+            print(f'\n{ref}\n{"─"*70}')
+            for _, ch, v, text in rows:
+                print(f'  [{v}] {text}')
+
+    else:
+        parts = args[0].strip().split() if len(args) == 1 else args
+        if len(parts) >= 2 and '.' in parts[1]:
+            pg, pa = (parts[1].split('.', 1) + [None])[:2]
+            rows = exact(conn, nc(parts[0]), int(pg), int(pa) if pa else None)
+        elif len(parts) >= 2:
+            try:
+                pg = int(parts[1]); pa = int(parts[2]) if len(parts) > 2 else None
+                rows = exact(conn, nc(parts[0]), pg, pa)
+            except: rows = []
+        else: rows = []
+        if not rows:
+            print('No results'); conn.close(); return
+        for title,p,pa,content in rows:
+            ref = f'p{p}' + (f'.{pa}' if pa else '')
+            print(f'\n{"="*70}\n{title}\nPage {p}, Paragraph {pa if pa else "—"}\n{"="*70}\n{content}')
+
+    conn.close()
+
+if __name__ == '__main__':
+    main()
