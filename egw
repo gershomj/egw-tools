@@ -623,10 +623,29 @@ def main():
                 print(f'  [{p}.{pa or "?"}] {content[:200]}...')
 
     elif cmd == '--cite':
-        parts = args[1].split('.')
-        result = cite(conn, nc(parts[0]), int(parts[1]), int(parts[2]) if len(parts) > 2 else None)
-        if result: print(result)
-        else: print(f"Not found: {args[1]}")
+        # Accept both "GC 456.1" (two args) and "GC.456.1" (one arg)
+        if len(args) >= 3:
+            code = nc(args[1])
+            ref = args[2]
+        elif len(args) >= 2:
+            parts = args[1].split()
+            if len(parts) >= 2:
+                code = nc(parts[0])
+                ref = parts[1]
+            else:
+                code = nc(args[1])
+                ref = None
+        else:
+            print("Usage: egw --cite GC 456.1"); return
+        if ref:
+            ref_parts = ref.split('.')
+            page = int(ref_parts[0])
+            para = int(ref_parts[1]) if len(ref_parts) > 1 else None
+            result = cite(conn, code, page, para)
+            if result: print(result)
+            else: print(f"Not found: {code} {ref}")
+        else:
+            print(f"Usage: egw --cite GC 456.1")
 
     elif cmd == '--person':
         rows = person_search(conn, args[1])
@@ -653,11 +672,10 @@ def main():
         else:
             print(f"Book not found: {args[1]}")
 
-    # ══ EGW paragraph reference (e.g. "GC 456.1") ══
-    elif re.match(r'^[A-Za-z0-9]+\s+\d+', cmd):
-        parts = cmd.split()
-        code = nc(parts[0])
-        ref = parts[1].split('.')
+    # ══ EGW paragraph reference (e.g. "GC 456.1" or "GC 456") ══
+    elif re.match(r'^[A-Za-z0-9]+$', cmd) and len(args) >= 2:
+        code = nc(cmd)
+        ref = args[1].split('.')
         page = int(ref[0])
         para = int(ref[1]) if len(ref) > 1 else None
         rows = exact(conn, code, page, para)
@@ -669,7 +687,7 @@ def main():
                 for title,p,pa,content in rows:
                     print(f'\n[{pa}] {content}')
         else:
-            print(f"Not found: {cmd}")
+            print(f"Not found: {code} {args[1]}")
 
     # ══ Unknown command → try as EGW reference ══
     else:
