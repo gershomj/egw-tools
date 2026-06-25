@@ -448,6 +448,8 @@ def usage():
   egw --chapter GC 41           Full chapter
   egw --diff GC GC88 456        Compare editions
   egw --cite GC 456.1           Formatted citation
+  egw --search-all "faith"      Search EGW + KJV + Strong's
+  egw --strongs H1254            Strong's Hebrew/Greek lookup
   egw --person "James White"    Letters mentioning
   egw --list                    Browse all books
   egw --info GC                 Book metadata
@@ -590,6 +592,65 @@ def main():
         print(f'\nBible refs in {args[1]} p{args[2]}:\n')
         for page,para,ref,ctx in ref_rows:
             print(f'  {ref:<20s} — {ctx[:120]}...')
+
+
+    elif cmd == '--search-all':
+        query = ' '.join(args[1:]) if len(args) > 1 else ''
+        if not query:
+            print("Usage: egw --search-all <query>")
+        else:
+            # Search EGW + KJV + Strong's
+            # EGW results
+            egw_rows = search(conn, query, None, 10)
+            # KJV results  
+            kjv_rows = kjv_search(query, 10)
+            # Strong's
+            strongs_rows = []
+            strongs_db = os.path.expanduser("~/.hermes/strongs.db")
+            if os.path.exists(strongs_db):
+                sconn = sqlite3.connect(strongs_db)
+                for table in ['hebrew', 'greek']:
+                    srows = sconn.execute(f"SELECT '{table}', strongs_id, lemma, kjv_def FROM {table} WHERE kjv_def LIKE ? OR lemma LIKE ? LIMIT 5", 
+                        (f'%{query}%', f'%{query}%')).fetchall()
+                    strongs_rows.extend(srows)
+                sconn.close()
+            
+            print(f'\nUnified search: "{query}"\n{"="*70}')
+            if egw_rows:
+                print('\n── EGW Writings ──')
+                for title,code,page,para,content,pid in egw_rows[:5]:
+                    ref = f'p{page}.{para}'
+                    print(f'[{code} {ref}] {title}\n  {content[:200]}...\n')
+            if kjv_rows:
+                print('\n── KJV Bible ──')
+                for book,ch,v,text,ref in kjv_rows[:5]:
+                    print(f'[{ref}] {text[:200]}')
+            if strongs_rows:
+                print('\n── Strong\'s ──')
+                for src,sid,lemma,defn in strongs_rows[:5]:
+                    print(f'[{src} {sid}] {lemma}: {defn[:150]}')
+            if not egw_rows and not kjv_rows and not strongs_rows:
+                print(f'No results for "{query}"')
+
+    elif cmd == '--strongs':
+        strongs_db = os.path.expanduser("~/.hermes/strongs.db")
+        if not os.path.exists(strongs_db):
+            print("Strong's database not found.")
+        else:
+            ref = args[1] if len(args) > 1 else ''
+            sconn = sqlite3.connect(strongs_db)
+            table = 'hebrew' if ref.upper().startswith('H') else 'greek'
+            row = sconn.execute(f"SELECT * FROM {table} WHERE strongs_id=?", (ref.upper(),)).fetchone()
+            if row:
+                print(f'\n{row[0]}: {row[1]}')
+                if row[2]: print(f'  Transliteration: {row[2]}')
+                if row[3]: print(f'  Pronunciation: {row[3]}')
+                if row[4]: print(f'  Derivation: {row[4]}')
+                if row[5]: print(f'  Definition: {row[5]}')
+                if row[6]: print(f'  KJV usage: {row[6]}')
+            else:
+                print(f"Strong's number not found: {ref}")
+            sconn.close()
 
     elif cmd == '--bible-stats':
         rows = bible_stats(conn)
