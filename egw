@@ -792,6 +792,89 @@ def main():
                 sconn.close()
             print()
 
+
+    elif cmd == '--kjv-strongs':
+        """Show Strong's numbers for words in a KJV verse."""
+        ref = ' '.join(args[1:]) if len(args) > 1 else ''
+        if not ref:
+            print("Usage: egw --kjv-strongs \"Genesis 1:1\"")
+        else:
+            research_db = os.path.expanduser("~/.hermes/research.db")
+            strongs_db = os.path.expanduser("~/.hermes/strongs.db")
+            if not os.path.exists(research_db):
+                print("Research database not built yet.")
+            else:
+                rconn = sqlite3.connect(research_db)
+                rconn.execute("ATTACH ? AS strongs", (strongs_db,))
+                
+                # Parse verse reference using same lookup as --xref
+                import re as _re2
+                book_lookup = {'genesis':'GEN','exodus':'EXO','leviticus':'LEV','numbers':'NUM',
+                    'deuteronomy':'DEU','joshua':'JOS','judges':'JDG','ruth':'RUT',
+                    '1 samuel':'1SA','2 samuel':'2SA','1 kings':'1KI','2 kings':'2KI',
+                    '1 chronicles':'1CH','2 chronicles':'2CH','ezra':'EZR','nehemiah':'NEH',
+                    'esther':'EST','job':'JOB','psalm':'PSA','psalms':'PSA','proverbs':'PRO',
+                    'ecclesiastes':'ECC','isaiah':'ISA','jeremiah':'JER','lamentations':'LAM',
+                    'ezekiel':'EZK','daniel':'DAN','hosea':'HOS','joel':'JOL','amos':'AMO',
+                    'obadiah':'OBA','jonah':'JON','micah':'MIC','nahum':'NAM','habakkuk':'HAB',
+                    'zephaniah':'ZEP','haggai':'HAG','zechariah':'ZEC','malachi':'MAL',
+                    'matthew':'MAT','mark':'MRK','luke':'LUK','john':'JHN','acts':'ACT',
+                    'romans':'ROM','1 corinthians':'1CO','2 corinthians':'2CO','galatians':'GAL',
+                    'ephesians':'EPH','philippians':'PHP','colossians':'COL',
+                    '1 thessalonians':'1TH','2 thessalonians':'2TH','1 timothy':'1TI',
+                    '2 timothy':'2TI','titus':'TIT','philemon':'PHM','hebrews':'HEB',
+                    'james':'JAS','1 peter':'1PE','2 peter':'2PE','1 john':'1JN',
+                    '2 john':'2JN','3 john':'3JN','jude':'JUD','revelation':'REV',
+                    'gen':'GEN','ex':'EXO','lev':'LEV','num':'NUM','deut':'DEU','ps':'PSA',
+                    'matt':'MAT','mk':'MRK','lk':'LUK','jn':'JHN','rom':'ROM','rev':'REV'}
+                
+                parts = _re2.sub(r'[:\-]', ' ', ref).split()
+                kjv_abbr = book_lookup.get(parts[0].lower())
+                if not kjv_abbr and len(parts) > 1:
+                    kjv_abbr = book_lookup.get(f"{parts[0]} {parts[1]}".lower())
+                    if kjv_abbr: parts = parts[2:]
+                else:
+                    parts = parts[1:] if kjv_abbr else parts
+                
+                if not kjv_abbr:
+                    print(f"Book not recognized: {ref}")
+                else:
+                    ch = int(parts[0]) if parts else 1
+                    vs = int(parts[1]) if len(parts) > 1 else 1
+                    
+                    rows = rconn.execute("""
+                        SELECT k.word_position, k.strongs_id, k.kjv_word,
+                               CASE WHEN k.strongs_id LIKE 'H%%' THEN h.lemma ELSE g.lemma END,
+                               CASE WHEN k.strongs_id LIKE 'H%%' THEN h.strongs_def ELSE g.strongs_def END
+                        FROM kjv_strongs_map k
+                        LEFT JOIN strongs.hebrew h ON k.strongs_id = h.strongs_id
+                        LEFT JOIN strongs.greek g ON k.strongs_id = g.strongs_id
+                        WHERE k.kjv_book=? AND k.kjv_chapter=? AND k.kjv_verse=?
+                        ORDER BY k.word_position
+                    """, (kjv_abbr, ch, vs)).fetchall()
+                    
+                    # Get the verse text
+                    kjv_db = os.path.expanduser("~/.hermes/kjv.db")
+                    kconn = sqlite3.connect(kjv_db)
+                    verse_text = kconn.execute(
+                        "SELECT text FROM verses WHERE book_abbr=? AND chapter=? AND verse=?",
+                        (kjv_abbr, ch, vs)
+                    ).fetchone()
+                    kconn.close()
+                    
+                    if verse_text:
+                        print(f'\n{ref}')
+                        print(f'{"="*70}')
+                        print(f'  {verse_text[0]}\n')
+                        if rows:
+                            for pos, sid, word, lemma, defn in rows:
+                                print(f'  [{pos}] {word} -> {sid} ({lemma or "?"}: {defn[:80] if defn else "?"})')
+                        else:
+                            print('  (No Strong\'s mappings for this verse)')
+                    else:
+                        print(f"Verse not found: {ref}")
+                rconn.close()
+
     elif cmd == '--person':
         rows = person_search(conn, args[1])
         print(f'\nLetters mentioning "{args[1]}" — {len(rows)} results\n')
